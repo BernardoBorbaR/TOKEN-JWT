@@ -1,76 +1,106 @@
-// Importa o módulo HTTP nativo do Node.js, que permite criar um servidor web
+// NOVO: Carrega as variáveis de ambiente do arquivo .env no início de tudo
+require('dotenv').config();
+
 const http = require('http');
-
-// Importa o framework Express, que facilita a criação de APIs e rotas
 const express = require('express');
-
-// Importa o módulo jsonwebtoken, que permite criar e verificar tokens JWT
 const jwt = require('jsonwebtoken');
 
-// Cria uma aplicação Express
+// ALTERADO: O segredo agora é lido de forma segura a partir das variáveis de ambiente
+const SECRET = process.env.JWT_SECRET;
+
+// Validação para garantir que o servidor não inicie sem o segredo
+if (!SECRET) {
+    console.error("ERRO: A variável de ambiente JWT_SECRET não foi definida. Crie um arquivo .env.");
+    process.exit(1); // Encerra a aplicação se o segredo não estiver configurado
+}
+
 const app = express();
 
-// Define uma "chave secreta" que será usada para assinar/verificar os tokens JWT
-const SECRET = 'borbatman';
-
-// Middleware que faz o Express entender JSON no corpo das requisições
 app.use(express.json());
 
-// Rota simples para testar se o servidor está funcionando
+// A blacklist continua em memória para este exemplo
+const blacklist = [];
+
+// Rota de teste inicial
 app.get('/', (req, res) => {
     res.json({ message: "Tudo ok por aqui!" });
 });
 
-// Lista que vai guardar tokens que foram "deslogados"
-const blacklist = [];
-
-// Função middleware que verifica se o token JWT é válido
+// --- Middleware de Verificação de Token (Refatorado) ---
 function verifyJWT(req, res, next) {
-    // Pega o token do cabeçalho da requisição
-    const token = req.headers['x-access-token'];
+    // ALTERADO: Lendo o token do cabeçalho 'Authorization' no padrão "Bearer"
+    const authHeader = req.headers['authorization'];
 
-    // Verifica se o token está na lista negra (ou seja, já foi deslogado)
-    const index = blacklist.findIndex(item => item === token);
-    if(index !== -1) return res.status(401).end(); // se tiver, bloqueia o acesso
+    if (!authHeader) {
+        return res.status(401).json({ message: 'Nenhum token fornecido.' });
+    }
 
-    // Verifica se o token é válido e ainda não expirou
+    const parts = authHeader.split(' ');
+
+    if (parts.length !== 2) {
+        return res.status(401).json({ message: 'Erro no formato do token.' });
+    }
+
+    const [scheme, token] = parts;
+
+    if (!/^Bearer$/i.test(scheme)) {
+        return res.status(401).json({ message: 'Token mal formatado.' });
+    }
+
+    // Verifica se o token está na blacklist
+    if (blacklist.includes(token)) {
+        return res.status(401).json({ message: 'Token inválido (logout já realizado).' });
+    }
+
     jwt.verify(token, SECRET, (err, decoded) => {
-        if (err) return res.status(401).end(); // token inválido ou expirado
+        if (err) {
+            // MELHORADO: Resposta de erro mais clara
+            return res.status(401).json({ message: 'Token inválido ou expirado.' });
+        }
 
-        // Se estiver tudo certo, salva o ID do usuário na requisição e segue
         req.userId = decoded.userId;
         next();
     });
 }
 
-// Rota protegida que só pode ser acessada com token válido
-app.get('/clientes', verifyJWT, (req, res) => {
-    console.log(req.nome + ' fez esta chamada!'); // Mostra no terminal quem fez a requisição
-    res.json([{ id: 1, nome: 'Bernardo' }]); // Retorna um exemplo de cliente
-});
+// --- Rotas da Aplicação ---
 
-// Rota de login, onde o usuário envia nome e senha
+// Rota de login (sem alterações na lógica principal)
 app.post('/login', (req, res) => {
-    const { user, password } = req.body; // Pega os dados enviados no corpo da requisição
+    const { user, password } = req.body;
 
-    // Verifica se usuário e senha estão corretos (simplesmente comparando strings fixas)
     if (user === 'Bernardo' && password === '123') {
-        // Cria um token JWT com validade de 5 minutos (300 segundos)
-        const token = jwt.sign({ userId: 1 }, SECRET, { expiresIn: 300 });
-        return res.json({ auth: true, token }); // Retorna o token para o cliente
+        const token = jwt.sign({ userId: 1 }, SECRET, { expiresIn: 300 }); // Token expira em 5 minutos
+        return res.json({ auth: true, token });
     }
 
-    // Se usuário ou senha estiverem errados, retorna erro
     return res.status(401).json({ auth: false, message: 'Usuário ou senha inválidos' });
 });
 
-// Rota para logout: o token usado é colocado na blacklist, assim ele não pode mais ser usado
-app.post('/logout', function (req, res) {
-    blacklist.push(req.headers['x-access-token']); // Adiciona o token na lista negra
-    res.end(); // Finaliza a requisição
+// Rota protegida
+app.get('/clientes', verifyJWT, (req, res) => {
+    // CORRIGIDO: Usando a variável correta 'req.userId' que foi definida no middleware
+    console.log(`Usuário com ID ${req.userId} fez esta chamada!`);
+    res.json([{ id: 1, nome: 'Bernardo' }]);
 });
 
-// Cria o servidor e faz ele escutar na porta 3000
+// Rota de logout (Refatorada para usar o padrão Bearer)
+app.post('/logout', (req, res) => {
+    const authHeader = req.headers['authorization'];
+    
+    if (authHeader) {
+        const token = authHeader.split(' ')[1];
+        if (token) {
+            blacklist.push(token);
+        }
+    }
+    
+    // MELHORADO: Resposta de sucesso clara
+    res.status(200).json({ message: 'Logout realizado com sucesso.' });
+});
+
+
+// --- Inicialização do Servidor ---
 const server = http.createServer(app);
 server.listen(3000, () => {
     console.log("Servidor escutando na porta 3000...");
